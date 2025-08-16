@@ -27,9 +27,10 @@ export default function HomePage() {
     disconnect,
     formatAddress,
     error: walletError,
+    mounted: walletMounted,
   } = useWallet();
 
-  // Fetch user profile to check admin status
+  // Fetch user profile to check admin status (only if wallet connected)
   const { data: profileData } = useQuery({
     queryKey: ["userProfile", account],
     queryFn: async () => {
@@ -39,15 +40,10 @@ export default function HomePage() {
       }
       return response.json();
     },
-    enabled: !!account && isConnected,
+    enabled: !!account && isConnected && walletMounted,
   });
 
-  const profile = profileData?.profile;
-  const isAdmin =
-    profile?.is_admin ||
-    (account && account.toLowerCase() === ADMIN_WALLET.toLowerCase());
-
-  // Fetch recent unminted art pieces (auto-refresh every 30 seconds)
+  // Fetch recent unminted art pieces (works without wallet)
   const {
     data: recentUnmintedData,
     isLoading: recentLoading,
@@ -61,10 +57,10 @@ export default function HomePage() {
       }
       return response.json();
     },
-    refetchInterval: 30000, // Refresh every 30 seconds
+    refetchInterval: 120000, // Refresh every 2 minutes
   });
 
-  // Fetch top collectors
+  // Fetch top collectors (works without wallet)
   const {
     data: collectorsData,
     isLoading: collectorsLoading,
@@ -80,7 +76,7 @@ export default function HomePage() {
     },
   });
 
-  // Infinite scroll for minted gallery with random sorting
+  // Infinite scroll for minted gallery (works without wallet)
   const {
     data: mintedData,
     fetchNextPage,
@@ -93,7 +89,10 @@ export default function HomePage() {
     queryFn: async ({ pageParam = 0 }) => {
       const queryParams = new URLSearchParams();
       queryParams.append("minted_only", "true");
-      queryParams.append("random", "true");
+      // Only use random after the first page
+      if (pageParam > 0) {
+        queryParams.append("random", "true");
+      }
       queryParams.append("limit", "12");
       queryParams.append("offset", pageParam.toString());
       if (searchTerm) {
@@ -138,13 +137,20 @@ export default function HomePage() {
     };
   }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
-  const handleWalletAction = () => {
+  // Handler functions
+  const handleWalletAction = useCallback(() => {
     if (isConnected) {
       disconnect();
     } else {
       connect();
     }
-  };
+  }, [isConnected, connect, disconnect]);
+
+  // Calculate derived values
+  const profile = profileData?.profile;
+  const isAdmin =
+    profile?.is_admin ||
+    (account && account.toLowerCase() === ADMIN_WALLET.toLowerCase());
 
   const recentUnmintedPieces = recentUnmintedData?.art_pieces || [];
   const featuredPiece = recentUnmintedPieces[0];
@@ -156,7 +162,7 @@ export default function HomePage() {
   return (
     <div className="min-h-screen bg-[#0D0F11] text-white">
       {/* Header */}
-      <div className="sticky top-0 z-50 bg-[#13171C] bg-opacity-90 backdrop-blur-sm border-b border-[#1F252B] px-4 md:px-6 py-4">
+      <div className="sticky top-0 z-50 bg-[#13171C] border-b border-[#1F252B] px-4 md:px-6 py-4">
         <div className="flex items-center justify-between max-w-7xl mx-auto">
           {/* Logo */}
           <div className="flex items-center space-x-3">
@@ -179,22 +185,18 @@ export default function HomePage() {
                 placeholder="Search minted pieces..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-10 pr-4 py-2 bg-[#1A1F25] border border-[#1F252B] rounded-full text-white placeholder-[#6B7683] focus:outline-none focus:ring-2 focus:ring-[#0062FF] focus:border-transparent hover:border-[#374151] transition-all duration-200 text-sm"
+                className="w-full pl-10 pr-4 py-2 bg-[#1A1F25] border border-[#1F252B] rounded-full text-white placeholder-[#6B7683] focus:outline-none focus:ring-2 focus:ring-[#0062FF] focus:border-transparent hover:border-[#374151] text-sm"
               />
             </div>
           </div>
 
-          {/* Navigation & Wallet */}
+          {/* Navigation & Wallet - Show wallet controls only if mounted */}
           <div className="flex items-center space-x-3">
-            {walletError && (
-              <div className="text-red-400 text-sm">{walletError}</div>
-            )}
-
-            {/* Profile Link - shows for all connected users */}
-            {isConnected && (
+            {/* Profile Link - shows for connected users only */}
+            {walletMounted && isConnected && (
               <a
                 href="/profile"
-                className="flex items-center space-x-2 px-3 py-2 bg-[#1A1F25] hover:bg-[#2A2F35] text-[#8C94A6] hover:text-white rounded-lg transition-colors duration-200"
+                className="flex items-center space-x-2 px-3 py-2 bg-[#1A1F25] hover:bg-[#2A2F35] text-[#8C94A6] hover:text-white rounded-lg"
               >
                 <User className="w-4 h-4" />
                 <span className="text-sm hidden sm:inline">
@@ -204,34 +206,45 @@ export default function HomePage() {
             )}
 
             {/* Settings Link - admin only */}
-            {isAdmin && (
+            {walletMounted && isAdmin && (
               <a
                 href="/settings"
-                className="flex items-center space-x-2 px-3 py-2 bg-[#1A1F25] hover:bg-[#2A2F35] text-[#8C94A6] hover:text-white rounded-lg transition-colors duration-200"
+                className="flex items-center space-x-2 px-3 py-2 bg-[#1A1F25] hover:bg-[#2A2F35] text-[#8C94A6] hover:text-white rounded-lg"
               >
                 <Settings className="w-4 h-4" />
                 <span className="text-sm hidden sm:inline">Settings</span>
               </a>
             )}
 
-            <button
-              onClick={handleWalletAction}
-              disabled={isConnecting}
-              className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 ${
-                isConnected
-                  ? "bg-[#00C853] hover:bg-[#00A846] text-white"
-                  : "bg-[#0062FF] hover:bg-[#1a72ff] text-white"
-              } ${isConnecting ? "opacity-50 cursor-not-allowed" : ""}`}
-            >
-              <Wallet size={16} />
-              <span>
-                {isConnecting
-                  ? "Connecting..."
-                  : isConnected
-                    ? formatAddress(account)
-                    : "Connect Wallet"}
-              </span>
-            </button>
+            {/* Only show wallet button if wallet is mounted */}
+            {walletMounted && (
+              <>
+                {walletError && (
+                  <div className="text-red-400 text-sm max-w-[200px] truncate">
+                    {walletError}
+                  </div>
+                )}
+
+                <button
+                  onClick={handleWalletAction}
+                  disabled={isConnecting}
+                  className={`flex items-center space-x-2 px-3 py-2 rounded-lg font-medium text-sm transition-colors duration-200 ${
+                    isConnected
+                      ? "bg-[#00C853] hover:bg-[#00A846] text-white"
+                      : "bg-[#374151] hover:bg-[#4B5563] text-[#D1D5DB] border border-[#4B5563]"
+                  } ${isConnecting ? "opacity-50 cursor-not-allowed" : ""}`}
+                >
+                  <Wallet size={14} />
+                  <span className="hidden sm:inline">
+                    {isConnecting
+                      ? "Connecting..."
+                      : isConnected
+                        ? formatAddress(account)
+                        : "Connect"}
+                  </span>
+                </button>
+              </>
+            )}
           </div>
         </div>
 
@@ -412,7 +425,9 @@ export default function HomePage() {
                       <div className="flex-1 min-w-0">
                         <p className="text-white font-medium text-sm truncate">
                           {collector.name ||
-                            formatAddress(collector.wallet_address)}
+                            (walletMounted && formatAddress
+                              ? formatAddress(collector.wallet_address)
+                              : `${collector.wallet_address.slice(0, 6)}...${collector.wallet_address.slice(-4)}`)}
                         </p>
                         <p className="text-[#6B7683] text-xs">
                           {collector.minted_count} minted

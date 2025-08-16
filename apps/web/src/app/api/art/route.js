@@ -1,14 +1,32 @@
 import sql from "@/app/api/utils/sql";
 import { generateUniqueIds } from "@/utils/wordGenerator";
+import {
+  secureFetch,
+  secureJsonResponse,
+  sanitizeInput,
+  isRateLimited,
+} from "@/app/api/utils/security";
 
 // POST /api/art - Submit new art piece via IPFS
 export async function POST(request) {
   try {
+    // Rate limiting - allow 10 requests per minute per IP
+    const clientIP = request.headers.get("x-forwarded-for") || "unknown";
+    if (isRateLimited(clientIP, 10, 60000)) {
+      return secureJsonResponse(
+        {
+          error: "Too many requests. Please try again later.",
+          code: "RATE_LIMIT_EXCEEDED",
+        },
+        { status: 429 },
+      );
+    }
+
     const body = await request.json();
     const { ipfs_metadata_url } = body;
 
     if (!ipfs_metadata_url) {
-      return Response.json(
+      return secureJsonResponse(
         {
           error: "IPFS metadata URL is required",
           code: "MISSING_IPFS_URL",
@@ -17,12 +35,10 @@ export async function POST(request) {
       );
     }
 
-    // Validate IPFS URL format
-    if (
-      !ipfs_metadata_url.startsWith("ipfs://") &&
-      !ipfs_metadata_url.includes("ipfs")
-    ) {
-      return Response.json(
+    // Sanitize and validate IPFS URL
+    const sanitizedUrl = sanitizeInput(ipfs_metadata_url);
+    if (!sanitizedUrl.startsWith("ipfs://") && !sanitizedUrl.includes("ipfs")) {
+      return secureJsonResponse(
         {
           error:
             "Invalid IPFS URL format. Must start with ipfs:// or contain ipfs",
@@ -33,27 +49,25 @@ export async function POST(request) {
     }
 
     // Convert IPFS URL to HTTP gateway if needed
-    let metadataUrl = ipfs_metadata_url;
-    if (ipfs_metadata_url.startsWith("ipfs://")) {
-      metadataUrl = ipfs_metadata_url.replace(
-        "ipfs://",
-        "https://ipfs.io/ipfs/",
-      );
+    let metadataUrl = sanitizedUrl;
+    if (sanitizedUrl.startsWith("ipfs://")) {
+      metadataUrl = sanitizedUrl.replace("ipfs://", "https://ipfs.io/ipfs/");
     }
 
-    // Fetch metadata from IPFS
+    // Fetch metadata from IPFS using secure fetch
     let metadata;
     try {
       console.log(`Fetching metadata from: ${metadataUrl}`);
-      const metadataResponse = await fetch(metadataUrl, {
+      const metadataResponse = await secureFetch(metadataUrl, {
         headers: {
           Accept: "application/json",
         },
-        timeout: 10000, // 10 second timeout
+        // Use signal for timeout
+        signal: AbortSignal.timeout(10000), // 10 second timeout
       });
 
       if (!metadataResponse.ok) {
-        return Response.json(
+        return secureJsonResponse(
           {
             error: `Failed to fetch metadata from IPFS. Status: ${metadataResponse.status}`,
             code: "IPFS_FETCH_FAILED",
@@ -65,7 +79,7 @@ export async function POST(request) {
       metadata = await metadataResponse.json();
     } catch (error) {
       console.error("IPFS fetch error:", error);
-      return Response.json(
+      return secureJsonResponse(
         {
           error:
             "Invalid IPFS metadata URL or metadata format. Please check the URL is accessible.",
@@ -76,12 +90,18 @@ export async function POST(request) {
       );
     }
 
-    // Validate required metadata fields
+    // Sanitize metadata fields
     const { name, description, image, identification_word, attributes } =
       metadata;
+    const sanitizedName = sanitizeInput(name);
+    const sanitizedDescription = sanitizeInput(description || "");
+    const sanitizedImage = sanitizeInput(image);
+    const sanitizedIdentificationWord = sanitizeInput(
+      identification_word || "",
+    );
 
-    if (!name || !image) {
-      return Response.json(
+    if (!sanitizedName || !sanitizedImage) {
+      return secureJsonResponse(
         {
           error: "Metadata must include required fields: name, image",
           code: "MISSING_REQUIRED_FIELDS",
@@ -92,18 +112,18 @@ export async function POST(request) {
     }
 
     // Convert image IPFS URL to HTTP if needed
-    let imageUrl = image;
-    if (image.startsWith("ipfs://")) {
-      imageUrl = image.replace("ipfs://", "https://ipfs.io/ipfs/");
+    let imageUrl = sanitizedImage;
+    if (sanitizedImage.startsWith("ipfs://")) {
+      imageUrl = sanitizedImage.replace("ipfs://", "https://ipfs.io/ipfs/");
     }
 
     // Check if art piece already exists
     const existing = await sql`
-      SELECT id, title FROM art_pieces WHERE ipfs_metadata_url = ${ipfs_metadata_url}
+      SELECT id, title FROM art_pieces WHERE ipfs_metadata_url = ${sanitizedUrl}
     `;
 
     if (existing.length > 0) {
-      return Response.json(
+      return secureJsonResponse(
         {
           error: "Art piece with this IPFS URL already exists",
           code: "DUPLICATE_ARTWORK",
@@ -115,7 +135,7 @@ export async function POST(request) {
     }
 
     // Generate unique identification_word to prevent duplicates
-    let identificationWord = identification_word;
+    let identificationWord = sanitizedIdentificationWord;
 
     if (!identificationWord || identificationWord.trim() === "") {
       // Get existing identification words to avoid duplicates
@@ -140,7 +160,7 @@ export async function POST(request) {
       `;
 
       if (existingWithId.length > 0) {
-        return Response.json(
+        return secureJsonResponse(
           {
             error: "An art piece with this identification word already exists",
             code: "DUPLICATE_IDENTIFICATION_WORD",
@@ -161,10 +181,10 @@ export async function POST(request) {
         identification_word,
         metadata_json
       ) VALUES (
-        ${ipfs_metadata_url},
+        ${sanitizedUrl},
         ${imageUrl},
-        ${name},
-        ${description || ""},
+        ${sanitizedName},
+        ${sanitizedDescription},
         ${identificationWord},
         ${JSON.stringify(metadata)}
       )
@@ -173,7 +193,7 @@ export async function POST(request) {
 
     const artPiece = result[0];
 
-    return Response.json(
+    return secureJsonResponse(
       {
         success: true,
         message: "Art piece successfully created",
@@ -195,7 +215,7 @@ export async function POST(request) {
     );
   } catch (error) {
     console.error("Error creating art piece:", error);
-    return Response.json(
+    return secureJsonResponse(
       {
         error: "Internal server error while creating art piece",
         code: "SERVER_ERROR",
@@ -209,11 +229,26 @@ export async function POST(request) {
 // GET /api/art - Get all art pieces for gallery
 export async function GET(request) {
   try {
+    // Rate limiting for GET requests too
+    const clientIP = request.headers.get("x-forwarded-for") || "unknown";
+    if (isRateLimited(`get_${clientIP}`, 60, 60000)) {
+      return secureJsonResponse(
+        {
+          error: "Too many requests. Please try again later.",
+          code: "RATE_LIMIT_EXCEEDED",
+        },
+        { status: 429 },
+      );
+    }
+
     const url = new URL(request.url);
-    const limit = parseInt(url.searchParams.get("limit") || "50");
-    const offset = parseInt(url.searchParams.get("offset") || "0");
+    const limit = Math.min(
+      parseInt(url.searchParams.get("limit") || "50"),
+      100,
+    ); // Cap at 100
+    const offset = Math.max(parseInt(url.searchParams.get("offset") || "0"), 0); // Ensure non-negative
     const minted_only = url.searchParams.get("minted_only") === "true";
-    const search = url.searchParams.get("search") || "";
+    const search = sanitizeInput(url.searchParams.get("search") || "");
     const random = url.searchParams.get("random") === "true";
 
     // Build the query using function notation for dynamic ORDER BY
@@ -413,7 +448,7 @@ export async function GET(request) {
       }
     } catch (dbError) {
       console.error("Database query error:", dbError);
-      return Response.json(
+      return secureJsonResponse(
         {
           error: "Database error while fetching art pieces",
           code: "DATABASE_ERROR",
@@ -453,7 +488,7 @@ export async function GET(request) {
       }
     });
 
-    return Response.json({
+    return secureJsonResponse({
       success: true,
       art_pieces,
       pagination: {
@@ -470,7 +505,7 @@ export async function GET(request) {
     });
   } catch (error) {
     console.error("Error fetching art pieces:", error);
-    return Response.json(
+    return secureJsonResponse(
       {
         error: "Internal server error while fetching art pieces",
         code: "SERVER_ERROR",

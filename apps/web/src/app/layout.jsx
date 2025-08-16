@@ -15,17 +15,8 @@ const queryClient = new QueryClient({
 
 export default function RootLayout({ children }) {
   return (
-    <html lang="en">
-      <head>
-        <meta charSet="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>NFT Art Gallery</title>
-      </head>
-      <body className="bg-[#0D0F11] text-white min-h-screen">
-        <QueryClientProvider client={queryClient}>
-          {children}
-        </QueryClientProvider>
-      </body>
-    </html>
+    <QueryClientProvider client={queryClient}>
+      <div className="bg-[#0D0F11] text-white min-h-screen">{children}</div>
+    </QueryClientProvider>
   );
 }
